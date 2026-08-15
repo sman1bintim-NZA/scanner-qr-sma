@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Scanner QR Presensi - SMAN 1 Bintan Timur V13.0</title>
+<title>Scanner QR + GPS Presensi - SMAN 1 Bintan Timur V13.2</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#eef4f0;color:#222;font-family:Arial,sans-serif}
@@ -29,7 +29,7 @@ button.secondary{background:#555}
     <div id="reader"></div>
     <button id="btnStart">▶ MULAI SCAN</button>
     <button id="btnStop" class="secondary" style="display:none">⏹ STOP KAMERA</button>
-    <div id="status" class="status">Tekan MULAI SCAN, lalu izinkan kamera.</div>
+    <div id="status" class="status">Tekan MULAI SCAN, izinkan kamera, lalu setelah QR terbaca izinkan lokasi.</div>
   </div>
 </div>
 
@@ -60,30 +60,58 @@ function decodeTarget(text){
   }catch(e){}
   return {token:text};
 }
+let returnBusy=false;
+
 function goBackWithToken(text){
+  if(returnBusy) return;
   const ret=getReturnUrl();
   if(!ret){
     status('❌ URL kembali aplikasi tidak tersedia. Buka scanner dari aplikasi presensi.', 'danger');
     return;
   }
   const d=decodeTarget(text);
-  let target='';
-  try{
-    const u=new URL(ret, location.href);
-    if(d.token){
-      u.searchParams.set('qr', d.token);
-    }else{
-      const x=new URL(d.url);
-      u.searchParams.set('qr', x.searchParams.get('qr')||'');
-    }
-    target=u.toString();
-  }catch(e){
-    status('❌ URL aplikasi tidak valid.', 'danger');
+  const token=d.token || '';
+  if(!token){
+    status('❌ QR sekolah tidak berisi token yang dapat diproses.', 'danger');
     return;
   }
-  status('✅ QR terbaca. Kembali ke aplikasi presensi...', 'success');
+
+  returnBusy=true;
   stopCamera();
-  setTimeout(function(){ location.href=target; }, 350);
+  document.getElementById('btnStart').style.display='none';
+  document.getElementById('btnStop').style.display='none';
+  status('📍 QR terbaca. Meminta izin lokasi untuk menentukan jarak ke sekolah...', '');
+
+  if(!navigator.geolocation){
+    returnBusy=false;
+    document.getElementById('btnStart').style.display='block';
+    status('❌ Browser tidak mendukung GPS. Aktifkan lokasi HP.', 'danger');
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(function(pos){
+    try{
+      const u=new URL(ret, location.href);
+      u.searchParams.set('qr', token);
+      u.searchParams.set('lat', String(pos.coords.latitude));
+      u.searchParams.set('lng', String(pos.coords.longitude));
+      if(pos.coords.accuracy) u.searchParams.set('acc', String(pos.coords.accuracy));
+      status('✅ QR dan lokasi berhasil. Kembali ke aplikasi presensi...', 'success');
+      setTimeout(function(){ location.replace(u.toString()); }, 350);
+    }catch(e){
+      returnBusy=false;
+      document.getElementById('btnStart').style.display='block';
+      status('❌ URL aplikasi tidak valid.', 'danger');
+    }
+  },function(error){
+    returnBusy=false;
+    document.getElementById('btnStart').style.display='block';
+    let msg='GPS tidak dapat diperoleh.';
+    if(error.code===1) msg='Izin lokasi ditolak. Pilih Izinkan untuk situs scanner ini, lalu coba scan lagi.';
+    else if(error.code===2) msg='Lokasi tidak tersedia. Pastikan GPS aktif.';
+    else if(error.code===3) msg='Pengambilan lokasi terlalu lama. Coba lagi.';
+    status('❌ '+msg, 'danger');
+  },{enableHighAccuracy:true,timeout:15000,maximumAge:0});
 }
 async function startCamera(){
   if(running) return;
