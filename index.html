@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scanner QR + GPS Presensi - SMAN 1 Bintan Timur V13.2</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eef4f0;color:#222;font-family:Arial,sans-serif}
+.wrap{max-width:620px;margin:auto;padding:18px}
+.card{background:#fff;border-radius:18px;padding:18px;box-shadow:0 4px 18px rgba(0,0,0,.10)}
+h1{font-size:21px;text-align:center;color:#08783d;margin:4px 0 8px}
+p{text-align:center;color:#59645e}
+#reader{width:100%;overflow:hidden;border-radius:14px;background:#111;min-height:260px}
+video{width:100%!important;height:auto!important;display:block}
+button{width:100%;border:0;border-radius:10px;padding:14px;margin-top:12px;font-weight:bold;font-size:16px;background:#08783d;color:#fff}
+button.secondary{background:#555}
+.status{margin-top:14px;padding:13px;border-radius:10px;background:#edf7f1;text-align:center;line-height:1.5}
+.danger{background:#ffecec;color:#a00000}
+.success{background:#e8f8ed;color:#08783d}
+.small{font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>📷 SCANNER QR PRESENSI</h1>
+    <p>SMAN 1 Bintan Timur</p>
+    <div id="reader"></div>
+    <button id="btnStart">▶ MULAI SCAN</button>
+    <button id="btnStop" class="secondary" style="display:none">⏹ STOP KAMERA</button>
+    <div id="status" class="status">Tekan MULAI SCAN, izinkan kamera, lalu setelah QR terbaca izinkan lokasi.</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/@zxing/browser@0.1.5/umd/zxing-browser.min.js"></script>
+<script>
+let controls=null;
+let readerObj=null;
+let stream=null;
+let running=false;
+
+function status(msg, cls){
+  const el=document.getElementById('status');
+  el.className='status '+(cls||'');
+  el.innerHTML=msg;
+}
+function getReturnUrl(){
+  try{
+    const u=new URL(location.href);
+    return u.searchParams.get('return')||'';
+  }catch(e){return '';}
+}
+function decodeTarget(text){
+  text=String(text||'').trim();
+  try{
+    const u=new URL(text);
+    const qr=u.searchParams.get('qr');
+    if(qr) return {url:u.origin+u.pathname+'?qr='+encodeURIComponent(qr)};
+  }catch(e){}
+  return {token:text};
+}
+let returnBusy=false;
+
+function goBackWithToken(text){
+  if(returnBusy) return;
+  const ret=getReturnUrl();
+  if(!ret){
+    status('❌ URL kembali aplikasi tidak tersedia. Buka scanner dari aplikasi presensi.', 'danger');
+    return;
+  }
+  const d=decodeTarget(text);
+  const token=d.token || '';
+  if(!token){
+    status('❌ QR sekolah tidak berisi token yang dapat diproses.', 'danger');
+    return;
+  }
+
+  returnBusy=true;
+  stopCamera();
+  document.getElementById('btnStart').style.display='none';
+  document.getElementById('btnStop').style.display='none';
+  status('📍 QR terbaca. Meminta izin lokasi untuk menentukan jarak ke sekolah...', '');
+
+  if(!navigator.geolocation){
+    returnBusy=false;
+    document.getElementById('btnStart').style.display='block';
+    status('❌ Browser tidak mendukung GPS. Aktifkan lokasi HP.', 'danger');
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(function(pos){
+    try{
+      const u=new URL(ret, location.href);
+      u.searchParams.set('qr', token);
+      u.searchParams.set('lat', String(pos.coords.latitude));
+      u.searchParams.set('lng', String(pos.coords.longitude));
+      if(pos.coords.accuracy) u.searchParams.set('acc', String(pos.coords.accuracy));
+      status('✅ QR dan lokasi berhasil. Kembali ke aplikasi presensi...', 'success');
+      setTimeout(function(){ location.replace(u.toString()); }, 350);
+    }catch(e){
+      returnBusy=false;
+      document.getElementById('btnStart').style.display='block';
+      status('❌ URL aplikasi tidak valid.', 'danger');
+    }
+  },function(error){
+    returnBusy=false;
+    document.getElementById('btnStart').style.display='block';
+    let msg='GPS tidak dapat diperoleh.';
+    if(error.code===1) msg='Izin lokasi ditolak. Pilih Izinkan untuk situs scanner ini, lalu coba scan lagi.';
+    else if(error.code===2) msg='Lokasi tidak tersedia. Pastikan GPS aktif.';
+    else if(error.code===3) msg='Pengambilan lokasi terlalu lama. Coba lagi.';
+    status('❌ '+msg, 'danger');
+  },{enableHighAccuracy:true,timeout:15000,maximumAge:0});
+}
+async function startCamera(){
+  if(running) return;
+  if(!window.isSecureContext){
+    status('❌ Scanner harus dibuka melalui HTTPS.', 'danger');
+    return;
+  }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    status('❌ Browser tidak mendukung akses kamera.', 'danger');
+    return;
+  }
+  if(typeof ZXingBrowser==='undefined'){
+    status('❌ Mesin scanner belum termuat. Pastikan internet aktif lalu refresh.', 'danger');
+    return;
+  }
+
+  const reader=document.getElementById('reader');
+  reader.innerHTML='<video id="video" playsinline autoplay muted></video>';
+  const video=document.getElementById('video');
+
+  try{
+    status('📷 Meminta izin kamera...', '');
+
+    readerObj=new ZXingBrowser.BrowserMultiFormatReader();
+
+    running=true;
+    document.getElementById('btnStart').style.display='none';
+    document.getElementById('btnStop').style.display='block';
+
+    // Jalankan ZXing langsung pada halaman HTTPS/top-level.
+    // Ini menghindari iframe Apps Script yang memblokir getUserMedia().
+    controls=await readerObj.decodeFromConstraints(
+      {
+        video:{
+          facingMode:{ideal:'environment'}
+        },
+        audio:false
+      },
+      video,
+      function(result, error){
+        if(result && running){
+          const raw=result.getText()||'';
+          goBackWithToken(raw);
+        }
+      }
+    );
+
+    status('📷 <b>SCAN AKTIF</b><br>Arahkan kamera belakang ke QR PRESENSI SEKOLAH.', '');
+  }catch(err){
+    stopCamera();
+    let msg='Kamera tidak dapat digunakan.';
+    if(err && err.name==='NotAllowedError'){
+      msg='Izin kamera ditolak. Izinkan kamera untuk situs scanner ini lalu tekan MULAI SCAN lagi.';
+    }else if(err && err.name==='NotFoundError'){
+      msg='Kamera tidak ditemukan pada perangkat.';
+    }else if(err && err.name==='NotReadableError'){
+      msg='Kamera sedang dipakai aplikasi lain. Tutup aplikasi kamera/WhatsApp lalu coba lagi.';
+    }else if(err && err.name==='SecurityError'){
+      msg='Akses kamera diblokir browser. Pastikan alamat scanner menggunakan HTTPS.';
+    }else if(err && err.message){
+      msg=err.message;
+    }
+    status('❌ '+msg, 'danger');
+  }
+}
+
+function stopCamera(){
+  running=false;
+  try{if(controls&&controls.stop)controls.stop();}catch(e){}
+  controls=null;
+  try{if(readerObj)readerObj.reset();}catch(e){}
+  readerObj=null;
+  try{
+    if(stream) stream.getTracks().forEach(function(t){t.stop();});
+  }catch(e){}
+  stream=null;
+  const video=document.getElementById('video');
+  if(video) video.srcObject=null;
+  document.getElementById('btnStart').style.display='block';
+  document.getElementById('btnStop').style.display='none';
+}
+document.getElementById('btnStart').addEventListener('click',startCamera);
+document.getElementById('btnStop').addEventListener('click',function(){
+  stopCamera();
+  status('Scanner dihentikan. Tekan MULAI SCAN untuk mencoba lagi.');
+});
+window.addEventListener('pagehide',stopCamera);
+</script>
+</body>
+</html>
